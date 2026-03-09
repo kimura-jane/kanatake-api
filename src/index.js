@@ -69,9 +69,9 @@ export default {
 
       // === チェックイン（来店ポイント） ===
       if (path === "/checkin" && method === "POST") {
-        const { device_id, latitude, longitude } = await request.json();
-        if (!device_id || latitude == null || longitude == null) {
-          return json({ error: "device_id, latitude, longitude required" }, 400, headers);
+        const { device_id, latitude, longitude, spot_lat, spot_lng, spot_name } = await request.json();
+        if (!device_id || latitude == null || longitude == null || spot_lat == null || spot_lng == null) {
+          return json({ error: "device_id, latitude, longitude, spot_lat, spot_lng required" }, 400, headers);
         }
 
         const today = new Date().toISOString().slice(0, 10);
@@ -80,27 +80,14 @@ export default {
         ).bind(device_id, today).first();
         if (already) return json({ error: "already checked in today" }, 409, headers);
 
-        const locations = await env.DB.prepare(
-          "SELECT * FROM locations"
-        ).all();
-
-        let nearestLocation = null;
-        let minDist = Infinity;
-        for (const loc of locations.results) {
-          const dist = getDistance(latitude, longitude, loc.latitude, loc.longitude);
-          if (dist < minDist) {
-            minDist = dist;
-            nearestLocation = loc;
-          }
-        }
-
-        if (!nearestLocation || minDist > 500) {
-          return json({ error: "not within 500m of any location", distance: Math.round(minDist) }, 403, headers);
+        const dist = getDistance(latitude, longitude, spot_lat, spot_lng);
+        if (dist > 500) {
+          return json({ error: "not within 500m of today's location", distance: Math.round(dist) }, 403, headers);
         }
 
         await env.DB.prepare(
           "INSERT INTO checkin_logs (device_id, location_id) VALUES (?, ?)"
-        ).bind(device_id, nearestLocation.id).run();
+        ).bind(device_id, 0).run();
 
         const points = await env.DB.prepare(
           "SELECT current_points FROM stamp_points WHERE device_id = ?"
@@ -122,7 +109,7 @@ export default {
 
         return json({
           ok: true,
-          location: nearestLocation.name,
+          location: spot_name || "出店場所",
           current_points: updated.current_points
         }, 200, headers);
       }
@@ -153,6 +140,7 @@ export default {
         ).bind(device_id).run();
         return json({ ok: true }, 200, headers);
       }
+
       // === 口コミ一覧（承認済み） ===
       if (path === "/reviews" && method === "GET") {
         const reviews = await env.DB.prepare(
