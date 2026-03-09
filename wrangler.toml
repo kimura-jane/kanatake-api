@@ -1,0 +1,8 @@
+name = "kanatake-api"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "kanatake-db"
+database_id = "ec3275b4-34de-45b5-971a-a2dfb6478039"
