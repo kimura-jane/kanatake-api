@@ -52,6 +52,58 @@ export default {
         return json({ used: !!device.welcome_coupon_used }, 200, headers);
       }
 
+      // === 誕生月登録 ===
+      if (path === "/birthday" && method === "POST") {
+        const { device_id, birth_month } = await request.json();
+        if (!device_id || !birth_month) return json({ error: "device_id and birth_month required" }, 400, headers);
+        if (birth_month < 1 || birth_month > 12) return json({ error: "invalid month" }, 400, headers);
+        await env.DB.prepare(
+          "UPDATE devices SET birth_month = ? WHERE device_id = ?"
+        ).bind(birth_month, device_id).run();
+        return json({ ok: true }, 200, headers);
+      }
+
+      // === 誕生日クーポン状態確認 ===
+      if (path === "/birthday-coupon/status" && method === "POST") {
+        const { device_id } = await request.json();
+        if (!device_id) return json({ error: "device_id required" }, 400, headers);
+        const device = await env.DB.prepare(
+          "SELECT birth_month, birthday_coupon_used_year FROM devices WHERE device_id = ?"
+        ).bind(device_id).first();
+        if (!device || !device.birth_month) return json({ registered: false }, 200, headers);
+        const now = new Date();
+        const currentMonth = now.getMonth() + 1;
+        const currentYear = now.getFullYear();
+        const isBirthMonth = device.birth_month === currentMonth;
+        const alreadyUsed = device.birthday_coupon_used_year === currentYear;
+        return json({
+          registered: true,
+          birth_month: device.birth_month,
+          is_birth_month: isBirthMonth,
+          available: isBirthMonth && !alreadyUsed,
+          used_this_year: alreadyUsed
+        }, 200, headers);
+      }
+
+      // === 誕生日クーポン使用 ===
+      if (path === "/birthday-coupon" && method === "POST") {
+        const { device_id, choice } = await request.json();
+        if (!device_id || !choice) return json({ error: "device_id and choice required" }, 400, headers);
+        const device = await env.DB.prepare(
+          "SELECT birth_month, birthday_coupon_used_year FROM devices WHERE device_id = ?"
+        ).bind(device_id).first();
+        if (!device || !device.birth_month) return json({ error: "birth_month not set" }, 400, headers);
+        const now = new Date();
+        const currentMonth = now.getMonth() + 1;
+        const currentYear = now.getFullYear();
+        if (device.birth_month !== currentMonth) return json({ error: "not your birth month" }, 403, headers);
+        if (device.birthday_coupon_used_year === currentYear) return json({ error: "already used this year" }, 409, headers);
+        await env.DB.prepare(
+          "UPDATE devices SET birthday_coupon_used_year = ? WHERE device_id = ?"
+        ).bind(currentYear, device_id).run();
+        return json({ ok: true, choice }, 200, headers);
+      }
+
       // === FiNANCiEクーポンコード入力 ===
       if (path === "/redeem-code" && method === "POST") {
         const { device_id, code } = await request.json();
@@ -86,8 +138,8 @@ export default {
         }
 
         await env.DB.prepare(
-          "INSERT INTO checkin_logs (device_id, location_id) VALUES (?, ?)"
-        ).bind(device_id, 0).run();
+          "INSERT INTO checkin_logs (device_id, location_id, spot_name) VALUES (?, ?, ?)"
+        ).bind(device_id, 0, spot_name || "").run();
 
         const points = await env.DB.prepare(
           "SELECT current_points FROM stamp_points WHERE device_id = ?"
@@ -114,18 +166,28 @@ export default {
         }, 200, headers);
       }
 
+      // === チェックイン履歴取得 ===
+      if (path === "/checkin-history" && method === "POST") {
+        const { device_id } = await request.json();
+        if (!device_id) return json({ error: "device_id required" }, 400, headers);
+        const logs = await env.DB.prepare(
+          "SELECT spot_name, checked_in_at FROM checkin_logs WHERE device_id = ? ORDER BY checked_in_at DESC LIMIT 50"
+        ).bind(device_id).all();
+        return json({ history: logs.results }, 200, headers);
+      }
+
       // === ポイント取得 ===
       if (path === "/points" && method === "POST") {
         const { device_id } = await request.json();
         if (!device_id) return json({ error: "device_id required" }, 400, headers);
         const points = await env.DB.prepare(
-          "SELECT current_points, total_redeemed FROM stamp_points WHERE device_id = ?"
+          "SELECT current_points, total_redeemed, megami_coupon_active FROM stamp_points WHERE device_id = ?"
         ).bind(device_id).first();
-        if (!points) return json({ current_points: 0, total_redeemed: 0 }, 200, headers);
+        if (!points) return json({ current_points: 0, total_redeemed: 0, megami_coupon_active: 0 }, 200, headers);
         return json(points, 200, headers);
       }
 
-      // === ポイント特典交換 ===
+      // === ポイント特典交換（女神のほほえみクーポン受け取り） ===
       if (path === "/redeem-points" && method === "POST") {
         const { device_id, required_points } = await request.json();
         if (!device_id || !required_points) return json({ error: "device_id and required_points required" }, 400, headers);
@@ -136,7 +198,17 @@ export default {
           return json({ error: "not enough points" }, 400, headers);
         }
         await env.DB.prepare(
-          "UPDATE stamp_points SET current_points = 0, total_redeemed = total_redeemed + 1 WHERE device_id = ?"
+          "UPDATE stamp_points SET current_points = 0, total_redeemed = total_redeemed + 1, megami_coupon_active = 1 WHERE device_id = ?"
+        ).bind(device_id).run();
+        return json({ ok: true }, 200, headers);
+      }
+
+      // === 女神のほほえみクーポン使用 ===
+      if (path === "/megami-coupon/use" && method === "POST") {
+        const { device_id } = await request.json();
+        if (!device_id) return json({ error: "device_id required" }, 400, headers);
+        await env.DB.prepare(
+          "UPDATE stamp_points SET megami_coupon_active = 0 WHERE device_id = ?"
         ).bind(device_id).run();
         return json({ ok: true }, 200, headers);
       }
@@ -170,9 +242,11 @@ export default {
 
       // === お知らせ取得 ===
       if (path === "/notices" && method === "GET") {
+        const all = url.searchParams.get("all");
+        const limit = all === "1" ? 50 : 3;
         const notices = await env.DB.prepare(
-          "SELECT id, body, created_at FROM notices ORDER BY created_at DESC LIMIT 3"
-        ).all();
+          `SELECT id, body, created_at FROM notices ORDER BY created_at DESC LIMIT ?`
+        ).bind(limit).all();
         return json({ notices: notices.results }, 200, headers);
       }
 
