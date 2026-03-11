@@ -57,10 +57,18 @@ export default {
         const { device_id, birth_month } = await request.json();
         if (!device_id || !birth_month) return json({ error: "device_id and birth_month required" }, 400, headers);
         if (birth_month < 1 || birth_month > 12) return json({ error: "invalid month" }, 400, headers);
+        // 既に登録済みか確認 → 変更不可
+        const device = await env.DB.prepare(
+          "SELECT birth_month FROM devices WHERE device_id = ?"
+        ).bind(device_id).first();
+        if (!device) return json({ error: "device not found" }, 404, headers);
+        if (device.birth_month !== null) {
+          return json({ error: "birth_month already set" }, 403, headers);
+        }
         await env.DB.prepare(
           "UPDATE devices SET birth_month = ? WHERE device_id = ?"
         ).bind(birth_month, device_id).run();
-        return json({ ok: true }, 200, headers);
+        return json({ ok: true, birth_month }, 200, headers);
       }
 
       // === 誕生日クーポン状態確認 ===
@@ -151,7 +159,7 @@ export default {
           ).bind(device_id).run();
         } else {
           await env.DB.prepare(
-            "INSERT INTO stamp_points (device_id, current_points) VALUES (?, 1)"
+            "INSERT INTO stamp_points (device_id, current_points, megami_coupon_active) VALUES (?, 1, 0)"
           ).bind(device_id).run();
         }
 
@@ -245,7 +253,7 @@ export default {
         const all = url.searchParams.get("all");
         const limit = all === "1" ? 50 : 3;
         const notices = await env.DB.prepare(
-          `SELECT id, body, created_at FROM notices ORDER BY created_at DESC LIMIT ?`
+          "SELECT id, body, created_at FROM notices ORDER BY created_at DESC LIMIT ?"
         ).bind(limit).all();
         return json({ notices: notices.results }, 200, headers);
       }
@@ -351,6 +359,71 @@ export default {
           "SELECT * FROM locations ORDER BY id"
         ).all();
         return json({ locations: locations.results }, 200, headers);
+      }
+
+      // === 端末情報検索（管理用） ===
+      if (path === "/admin/device-info" && method === "POST") {
+        const { device_id } = await request.json();
+        if (!device_id) return json({ error: "device_id required" }, 400, headers);
+
+        const device = await env.DB.prepare(
+          "SELECT device_id, welcome_coupon_used, birth_month, birthday_coupon_used_year FROM devices WHERE device_id = ?"
+        ).bind(device_id).first();
+        if (!device) return json({ error: "device not found" }, 404, headers);
+
+        const points = await env.DB.prepare(
+          "SELECT current_points, total_redeemed, megami_coupon_active FROM stamp_points WHERE device_id = ?"
+        ).bind(device_id).first();
+
+        const checkins = await env.DB.prepare(
+          "SELECT COUNT(*) as count FROM checkin_logs WHERE device_id = ?"
+        ).bind(device_id).first();
+
+        return json({
+          device_id: device.device_id,
+          welcome_coupon_used: !!device.welcome_coupon_used,
+          birth_month: device.birth_month,
+          birthday_coupon_used_year: device.birthday_coupon_used_year,
+          current_points: points ? points.current_points : 0,
+          total_redeemed: points ? points.total_redeemed : 0,
+          megami_coupon_active: points ? points.megami_coupon_active : 0,
+          checkin_count: checkins ? checkins.count : 0
+        }, 200, headers);
+      }
+
+      // === ポイント手動付与（管理用） ===
+      if (path === "/admin/add-points" && method === "POST") {
+        const { device_id, points } = await request.json();
+        if (!device_id || !points || points < 1) return json({ error: "device_id and points (>=1) required" }, 400, headers);
+
+        // デバイスが存在するか確認
+        const device = await env.DB.prepare(
+          "SELECT device_id FROM devices WHERE device_id = ?"
+        ).bind(device_id).first();
+        if (!device) return json({ error: "device not found" }, 404, headers);
+
+        const current = await env.DB.prepare(
+          "SELECT current_points FROM stamp_points WHERE device_id = ?"
+        ).bind(device_id).first();
+
+        if (current) {
+          const newPoints = current.current_points + points;
+          if (newPoints > 20) return json({ error: "points would exceed 20 (current: " + current.current_points + ")" }, 400, headers);
+          await env.DB.prepare(
+            "UPDATE stamp_points SET current_points = ? WHERE device_id = ?"
+          ).bind(newPoints, device_id).run();
+        } else {
+          if (points > 20) return json({ error: "points cannot exceed 20" }, 400, headers);
+          await env.DB.prepare(
+            "INSERT INTO stamp_points (device_id, current_points, megami_coupon_active) VALUES (?, ?, 0)"
+          ).bind(device_id, points).run();
+        }
+
+        const updated = await env.DB.prepare(
+          "SELECT current_points FROM stamp_points WHERE device_id = ?"
+        ).bind(device_id).first();
+
+        return json({ ok: true, current_points: updated.current_points }, 200, headers);
       }
 
       return json({ error: "not found" }, 404, headers);
