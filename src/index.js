@@ -52,6 +52,17 @@ export default {
         return json({ used: !!device.welcome_coupon_used }, 200, headers);
       }
 
+      // ★★ 追加: 誕生月取得 (GET /birthday) ★★
+      if (path === "/birthday" && method === "GET") {
+        const device_id = url.searchParams.get("device_id");
+        if (!device_id) return json({ error: "device_id required" }, 400, headers);
+        const device = await env.DB.prepare(
+          "SELECT birth_month FROM devices WHERE device_id = ?"
+        ).bind(device_id).first();
+        if (!device) return json({ ok: true, birth_month: null }, 200, headers);
+        return json({ ok: true, birth_month: device.birth_month ?? null }, 200, headers);
+      }
+
       // === 誕生月登録 ===
       if (path === "/birthday" && method === "POST") {
         const { device_id, birth_month } = await request.json();
@@ -396,7 +407,6 @@ export default {
         const { device_id, points } = await request.json();
         if (!device_id || !points || points < 1) return json({ error: "device_id and points (>=1) required" }, 400, headers);
 
-        // デバイスが存在するか確認
         const device = await env.DB.prepare(
           "SELECT device_id FROM devices WHERE device_id = ?"
         ).bind(device_id).first();
