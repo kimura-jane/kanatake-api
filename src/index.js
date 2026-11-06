@@ -112,8 +112,7 @@ export default {
         const device = await env.DB.prepare(
           "SELECT birth_month, birthday_coupon_used_year FROM devices WHERE device_id = ?"
         ).bind(device_id).first();
-        if (!device) return json({ error: "device not found" }, 404, headers);
-        if (!device.birth_month) return json({ error: "birth_month not set" }, 400, headers);
+        if (!device || !device.birth_month) return json({ error: "birth_month not set" }, 400, headers);
         const now = new Date();
         const currentMonth = now.getMonth() + 1;
         const currentYear = now.getFullYear();
@@ -136,7 +135,7 @@ export default {
         if (coupon.used) return json({ error: "already used" }, 409, headers);
         await env.DB.prepare(
           "UPDATE coupon_codes SET used = 1, used_by_device = ?, used_at = datetime('now') WHERE code = ?"
-        ).bind(device_id, today).run();
+        ).bind(device_id, code).run();
         return json({ ok: true, prize: coupon.prize }, 200, headers);
       }
 
@@ -324,7 +323,7 @@ export default {
         const code = "KNT-" + Math.random().toString(36).substring(2, 8).toUpperCase();
         await env.DB.prepare(
           "INSERT INTO coupon_codes (code, prize) VALUES (?, ?)"
-        ).bind(device_id, code).run();
+        ).bind(code, prize).run();
         return json({ ok: true, code }, 200, headers);
       }
 
@@ -398,6 +397,7 @@ export default {
           birthday_coupon_used_year: device.birthday_coupon_used_year,
           current_points: points ? points.current_points : 0,
           total_redeemed: points ? points.total_redeemed : 0,
+          megami_coupon_active: points ? points.megami_coupon_active : 0,
           checkin_count: checkins ? checkins.count : 0
         }, 200, headers);
       }
@@ -421,7 +421,7 @@ export default {
           if (newPoints > 20) return json({ error: "points would exceed 20 (current: " + current.current_points + ")" }, 400, headers);
           await env.DB.prepare(
             "UPDATE stamp_points SET current_points = ? WHERE device_id = ?"
-          ).bind(newPoints).run();
+          ).bind(newPoints, device_id).run();
         } else {
           if (points > 20) return json({ error: "points cannot exceed 20" }, 400, headers);
           await env.DB.prepare(
