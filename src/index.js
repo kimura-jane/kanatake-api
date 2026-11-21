@@ -152,7 +152,7 @@ export default {
             "UPDATE coupon_codes SET used = 1, used_by_device = ?, " +
             "used_at = datetime('now'), redeemed_at = datetime('now') " +
             "WHERE code = ? AND used = 0 AND EXISTS (" +
-            "SELECT 1 FROM user_coupons WHERE device_id = ? AND code = ? AND used_at = ?) RETURNING id"
+            "SELECT 1 FROM user_coupons WHERE device_id = ? AND code = ? AND used_at = ?) RETURNING code"
           ).bind(device_id, code, device_id, code, claimMarker),
           env.DB.prepare(
             "UPDATE user_coupons SET used_at = NULL WHERE device_id = ? AND code = ? " +
