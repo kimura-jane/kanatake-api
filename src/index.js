@@ -448,26 +448,30 @@ export default {
       }
 
       // === ポイント手動付与（管理用） ===
+      // 20ptは交換単位であって、保有残高の上限ではない。
       if (path === "/admin/add-points" && method === "POST") {
         const { device_id, points } = await readBody(request);
-        if (!device_id || !points || points < 1) return json({ error: "device_id and points (>=1) required" }, 400, headers);
-
+        if (typeof device_id !== "string" || !device_id.trim() || device_id.length > 128) {
+          return json({ error: "invalid device_id" }, 400, headers);
+        }
+        // 一度の管理操作は1〜100ptに限定する。残高には20pt上限を設けない。
+        if (!Number.isSafeInteger(points) || points < 1 || points > 100) {
+          return json({ error: "points must be an integer from 1 to 100" }, 400, headers);
+        }
         const device = await env.DB.prepare(
           "SELECT device_id FROM devices WHERE device_id = ?"
         ).bind(device_id).first();
         if (!device) return json({ error: "device not found" }, 404, headers);
 
-        if (!Number.isSafeInteger(points) || points < 1 || points > 20) return json({ error: "invalid points" }, 400, headers);
         const added = await env.DB.prepare(
-          "INSERT INTO stamp_points (device_id, current_points, megami_coupon_active) VALUES (?, ?, 0) ON CONFLICT(device_id) DO UPDATE SET current_points = stamp_points.current_points + excluded.current_points WHERE stamp_points.current_points + excluded.current_points <= 20 RETURNING current_points"
+          "INSERT INTO stamp_points (device_id, current_points, megami_coupon_active) VALUES (?, ?, 0) " +
+          "ON CONFLICT(device_id) DO UPDATE SET current_points = COALESCE(stamp_points.current_points, 0) + excluded.current_points " +
+          "WHERE COALESCE(stamp_points.current_points, 0) >= 0 " +
+          "AND COALESCE(stamp_points.current_points, 0) <= 9007199254740991 - excluded.current_points " +
+          "RETURNING current_points"
         ).bind(device_id, points).first();
-        if (!added) return json({ error: "points would exceed 20" }, 400, headers);
-
-        const updated = await env.DB.prepare(
-          "SELECT current_points FROM stamp_points WHERE device_id = ?"
-        ).bind(device_id).first();
-
-        return json({ ok: true, current_points: updated.current_points }, 200, headers);
+        if (!added) return json({ error: "points balance would exceed safe limit" }, 409, headers);
+        return json({ ok: true, current_points: added.current_points }, 200, headers);
       }
 
       return json({ error: "not found" }, 404, headers);
