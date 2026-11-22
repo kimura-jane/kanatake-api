@@ -603,12 +603,12 @@ async function readBody(request) {
   catch (_) { throw new InvalidPayload(); }
 }
 
-// 旧アプリ（request_id無し）を段階的な更新中も継続利用できるようにする。
-// 古いクライアントは生成番号や操作IDを送らないため、サーバー側で現行の
-// total_redeemed を世代番号とみなし、同一世代の同一操作に決定的なIDを付ける。
-// 新旧どちらも applyCouponOperation の同じD1トランザクションと台帳を使う。
-// 重要: 旧プロトコルは遅延リクエストと別世代の新しい意思を厳密には区別できない。
-// そのため新アプリの強い冪等性と同等とは扱わず、旧アプリ提供終了までは監視する。
+// 旧アプリ（request_id 無し）の特典操作。
+// 本文は {device_id} のみで、同一操作の全リクエストがバイト単位で同一になる。
+// そのため「遅延した再送」と「新しい意思」をサーバー側で区別する材料が存在しない。
+// 時間窓で推測するのは誤吸収・誤消費の両方を生むだけなので採用しない。
+// 方針: 状態を変えない操作だけを従来どおり返し、状態を変え得る操作は一切実行せず
+//       HTTP 426 でアプリ更新を要求する（fail-closed）。ポイント・クーポンは保持される。
 async function legacyCouponOperation(db, action, device) {
   const redeem = action === "redeem";
   const snapshot = await db.prepare(
@@ -619,6 +619,7 @@ async function legacyCouponOperation(db, action, device) {
     total_redeemed: toSafeInt(snapshot?.total_redeemed) ?? 0,
     megami_coupon_active: toSafeInt(snapshot?.megami_coupon_active) ?? 0
   };
+  // 以下3つは「どちらの解釈でも結果が同じ＝状態を変えない」ため、旧UIの文言を保ったまま返せる。
   if (redeem && state.megami_coupon_active === 1) {
     return { status: 409, body: { ok: false, legacy: true, code: "coupon_already_active",
       error: "女神のほほえみクーポンはすでに受け取り済みです。クーポンをご利用ください。", ...state } };
@@ -627,22 +628,18 @@ async function legacyCouponOperation(db, action, device) {
     return { status: 400, body: { ok: false, legacy: true, code: "insufficient_points",
       error: "ポイントが20ポイント未満です。", ...state } };
   }
-  if (!redeem && state.megami_coupon_active !== 1) {
+  if (!redeem && state.megami_coupon_active === 0) {
     return { status: 409, body: { ok: false, legacy: true, code: "coupon_not_active",
       error: "有効な女神のほほえみクーポンがありません。", ...state } };
   }
-  // 残高や世代がスナップショット後に変化していても、台帳の条件付きINSERT
-  // とUPDATEを単一batchに入れているため、二重消費・二重使用は起こさない。
-  const result = await applyCouponOperation(db, action, {
-    device_id: device,
-    request_id: `legacy-${action}-${state.total_redeemed}`,
-    coupon_generation: state.total_redeemed
-  });
-  return { status: result.status, body: { ...result.body, legacy: true } };
+  // ここに来る要求は状態を変え得る＝再送か新規意思かを識別できない。実行しない。
+  return { status: 426, body: { ok: false, legacy: true, retryable: false, code: "app_update_required",
+    error: "このアプリでは特典の受け取り・利用を実行できません。アプリを最新版に更新してください。ポイントとクーポンはそのまま残っています。",
+    ...state } };
 }
 
 // 台帳挿入・残高更新・応答用の読み取りを1つのD1トランザクション（batch）で行う。
-// 旧アプリも同じ台帳処理に到達する。操作IDは旧アプリ経路で世代ごとに作る。
+// 旧アプリ経路は legacyCouponOperation（fail-closed）が担当し、ここには到達しない。
 async function applyCouponOperation(db, action, body) {
   const { device_id: device } = body;
   if (typeof device !== "string" || !device.trim() || device.length > 128) {
